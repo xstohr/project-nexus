@@ -121,6 +121,16 @@ Resources:
         LogLevel: !Ref LogLevel
         ResourcePrefix: !Sub ${ProjectName}-api
         IAMResourcePrefix: Service-API
+        
+  ApiDocsStack:
+    Type: AWS::Serverless::Application
+    Properties:
+      Location: ./services/api_docs/template.yaml
+      Parameters:
+        Environment: !Ref Environment
+        LogLevel: !Ref LogLevel
+        ResourcePrefix: !Sub ${ProjectName}-api-docs
+        IAMResourcePrefix: Service-ApiDocs
 
   # Custom Domain (Optional)
   ApiDomain:
@@ -145,6 +155,10 @@ Outputs:
   ApiEndpoint:
     Description: "API Gateway Endpoint"
     Value: !GetAtt ApiStack.Outputs.ApiEndpoint
+  
+  ApiDocsEndpoint:
+    Description: "API Documentation Endpoint"
+    Value: !GetAtt ApiDocsStack.Outputs.SwaggerUIEndpoint
   
   UserPoolId:
     Description: "Cognito User Pool ID"

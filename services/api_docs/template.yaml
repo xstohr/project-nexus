@@ -1,0 +1,166 @@
+AWSTemplateFormatVersion: 2010-09-09
+Transform:
+  - AWS::Serverless-2016-10-31
+Description: Nexus API Documentation Service
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+    Description: Environment name for deployment
+  ServiceName:
+    Type: String
+    Default: nexus-api-docs
+  ResourcePrefix:
+    Type: String
+    Default: nexus-api-docs
+  IAMResourcePrefix:
+    Type: String
+    Default: Service-ApiDocs
+  LogLevel:
+    Type: String
+    Default: INFO
+    Description: Log level for Lambda functions
+
+Globals:
+  Function:
+    Timeout: 30
+    MemorySize: 128
+    Runtime: python3.11
+    Architectures:
+      - x86_64
+    Environment:
+      Variables:
+        LOG_LEVEL: !Ref LogLevel
+        SERVICE_NAME: !Ref ServiceName
+        SERVICE_ENVIRONMENT: !Ref Environment
+
+Conditions:
+  IsProd: !Equals [ !Ref Environment, "prod" ]
+  IsNotProd: !Not [ Condition: IsProd ]
+
+Resources:
+  # Roles
+  ApiRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${IAMResourcePrefix}-ApiRole
+      Path: "/nexus/service-role/api-docs/"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+                - apigateway.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess
+
+  # API Gateway definition for Swagger UI
+  SwaggerUiApiGateway:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: !Ref Environment
+      Cors:
+        AllowMethods: "'GET,OPTIONS'"
+        AllowHeaders: "'Content-Type,Authorization'"
+        AllowOrigin: "'*'"
+      TracingEnabled: true
+
+  # Lambda Functions
+  SwaggerUIFunction:
+    Type: AWS::Serverless::Function
+    DependsOn:
+      - ApiRole
+    Properties:
+      FunctionName: !Sub ${ResourcePrefix}-swagger-ui
+      CodeUri: functions/swagger_ui/
+      Handler: app.lambda_handler
+      Description: Swagger UI for API documentation
+      Role: !GetAtt ApiRole.Arn
+      Events:
+        SwaggerUI:
+          Type: Api
+          Properties:
+            RestApiId: !Ref SwaggerUiApiGateway
+            Path: /
+            Method: get
+        SwaggerDocs:
+          Type: Api
+          Properties:
+            RestApiId: !Ref SwaggerUiApiGateway
+            Path: /docs
+            Method: get
+        SwaggerYAML:
+          Type: Api
+          Properties:
+            RestApiId: !Ref SwaggerUiApiGateway
+            Path: /openapi.yaml
+            Method: get
+        SwaggerJSON:
+          Type: Api
+          Properties:
+            RestApiId: !Ref SwaggerUiApiGateway
+            Path: /openapi.json
+            Method: get
+
+  # S3 Bucket for API Documentation
+  ApiDocsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub ${ResourcePrefix}-${Environment}
+      AccessControl: Private
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      Tags:
+        - Key: stack-id
+          Value: !Sub "${AWS::StackId}"
+        - Key: stack-name
+          Value: !Sub "${AWS::StackName}"
+        - Key: service-name
+          Value: !Ref ServiceName
+
+  # S3 Bucket Policy
+  ApiDocsBucketPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub ${IAMResourcePrefix}-S3BucketAccess
+      Roles:
+        - !Ref ApiRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+              - s3:ListBucket
+            Resource:
+              - !Sub "arn:aws:s3:::${ApiDocsBucket}"
+              - !Sub "arn:aws:s3:::${ApiDocsBucket}/*"
+
+Outputs:
+  SwaggerUIEndpoint:
+    Description: "Swagger UI endpoint URL"
+    Value: !Sub "https://${SwaggerUiApiGateway}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/"
+  
+  ApiDocsBucket:
+    Description: "S3 bucket for API documentation"
+    Value: !Ref ApiDocsBucket
+  
+  SwaggerUIFunction:
+    Description: "Swagger UI Lambda Function ARN"
+    Value: !GetAtt SwaggerUIFunction.Arn 
