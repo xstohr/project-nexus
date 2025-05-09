@@ -1,5 +1,6 @@
-AWSTemplateFormatVersion: '2010-09-09'
-Transform: AWS::Serverless-2016-10-31
+AWSTemplateFormatVersion: 2010-09-09
+Transform:
+  - AWS::Serverless-2016-10-31
 Description: Nexus Workspaces Service - Manages workspaces for multi-tenant system
 
 Parameters:
@@ -11,9 +12,22 @@ Parameters:
       - staging
       - prod
     Description: Environment name for deployment
+  ServiceName:
+    Type: String
+    Default: nexus-workspaces
+  ResourcePrefix:
+    Type: String
+    Default: nexus-workspaces
+  IAMResourcePrefix:
+    Type: String
+    Default: Service-Workspaces
   AccountsTableName:
     Type: String
     Description: Name of the accounts table from the Accounts service
+  LogLevel:
+    Type: String
+    Default: INFO
+    Description: Log level for Lambda functions
 
 Globals:
   Function:
@@ -24,106 +38,145 @@ Globals:
       - x86_64
     Environment:
       Variables:
-        LOG_LEVEL: INFO
-        ENVIRONMENT: !Ref Environment
+        LOG_LEVEL: !Ref LogLevel
+        SERVICE_NAME: !Ref ServiceName
+        SERVICE_ENVIRONMENT: !Ref Environment
         ACCOUNTS_TABLE: !Ref AccountsTableName
 
+Conditions:
+  IsProd: !Equals [ !Ref Environment, "prod" ]
+  IsNotProd: !Not [ Condition: IsProd ]
+
 Resources:
+  # Roles
+  ApiRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${IAMResourcePrefix}-ApiRole
+      Path: "/nexus/service-role/workspaces/"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+                - apigateway.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess
+
+  # Policies
+  AccountsTableCRUDPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub ${IAMResourcePrefix}-AccountsTableCRUD
+      Roles:
+        - !Ref ApiRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - dynamodb:Query
+              - dynamodb:Scan
+              - dynamodb:GetItem
+              - dynamodb:PutItem
+              - dynamodb:UpdateItem
+              - dynamodb:DeleteItem
+              - dynamodb:BatchWriteItem
+              - dynamodb:BatchGetItem
+            Resource:
+              - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${AccountsTableName}"
+              - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${AccountsTableName}/*"
+
   # Lambda Functions for Workspace Management - each function follows single responsibility principle
   CreateWorkspaceFunction:
     Type: AWS::Serverless::Function
+    DependsOn:
+      - AccountsTableCRUDPolicy
     Properties:
+      FunctionName: !Sub ${ResourcePrefix}-create-workspace
       CodeUri: functions/
       Handler: workspace_operations.create_workspace.create_workspace.handler
       Description: Creates a new workspace
-      Environment:
-        Variables:
-          ACCOUNTS_TABLE: !Ref AccountsTableName
+      Role: !GetAtt ApiRole.Arn
       Events:
         CreateWorkspace:
           Type: Api
           Properties:
             Path: /accounts/{accountId}/workspaces
             Method: post
-      Policies:
-        - DynamoDBCrudPolicy:
-            TableName: !Ref AccountsTableName
 
   GetWorkspaceFunction:
     Type: AWS::Serverless::Function
+    DependsOn:
+      - AccountsTableCRUDPolicy
     Properties:
+      FunctionName: !Sub ${ResourcePrefix}-get-workspace
       CodeUri: functions/
       Handler: workspace_operations.get_workspace.get_workspace.handler
       Description: Retrieves workspace details
-      Environment:
-        Variables:
-          ACCOUNTS_TABLE: !Ref AccountsTableName
+      Role: !GetAtt ApiRole.Arn
       Events:
         GetWorkspace:
           Type: Api
           Properties:
             Path: /workspaces/{workspaceId}
             Method: get
-      Policies:
-        - DynamoDBCrudPolicy:
-            TableName: !Ref AccountsTableName
 
   UpdateWorkspaceFunction:
     Type: AWS::Serverless::Function
+    DependsOn:
+      - AccountsTableCRUDPolicy
     Properties:
+      FunctionName: !Sub ${ResourcePrefix}-update-workspace
       CodeUri: functions/
       Handler: workspace_operations.update_workspace.update_workspace.handler
       Description: Updates workspace details
-      Environment:
-        Variables:
-          ACCOUNTS_TABLE: !Ref AccountsTableName
+      Role: !GetAtt ApiRole.Arn
       Events:
         UpdateWorkspace:
           Type: Api
           Properties:
             Path: /workspaces/{workspaceId}
             Method: put
-      Policies:
-        - DynamoDBCrudPolicy:
-            TableName: !Ref AccountsTableName
 
   DeleteWorkspaceFunction:
     Type: AWS::Serverless::Function
+    DependsOn:
+      - AccountsTableCRUDPolicy
     Properties:
+      FunctionName: !Sub ${ResourcePrefix}-delete-workspace
       CodeUri: functions/
       Handler: workspace_operations.delete_workspace.delete_workspace.handler
       Description: Deletes (deactivates) a workspace
-      Environment:
-        Variables:
-          ACCOUNTS_TABLE: !Ref AccountsTableName
+      Role: !GetAtt ApiRole.Arn
       Events:
         DeleteWorkspace:
           Type: Api
           Properties:
             Path: /workspaces/{workspaceId}
             Method: delete
-      Policies:
-        - DynamoDBCrudPolicy:
-            TableName: !Ref AccountsTableName
 
   ListWorkspacesFunction:
     Type: AWS::Serverless::Function
+    DependsOn:
+      - AccountsTableCRUDPolicy
     Properties:
+      FunctionName: !Sub ${ResourcePrefix}-list-workspaces
       CodeUri: functions/
       Handler: workspace_operations.list_workspaces.list_workspaces.handler
       Description: Lists workspaces for an account
-      Environment:
-        Variables:
-          ACCOUNTS_TABLE: !Ref AccountsTableName
+      Role: !GetAtt ApiRole.Arn
       Events:
         GetWorkspaces:
           Type: Api
           Properties:
             Path: /accounts/{accountId}/workspaces
             Method: get
-      Policies:
-        - DynamoDBCrudPolicy:
-            TableName: !Ref AccountsTableName
 
 Outputs:
   CreateWorkspaceFunction:
@@ -144,4 +197,8 @@ Outputs:
   
   ListWorkspacesFunction:
     Description: "List Workspaces Lambda Function ARN"
-    Value: !GetAtt ListWorkspacesFunction.Arn 
+    Value: !GetAtt ListWorkspacesFunction.Arn
+    
+  ApiEndpoint:
+    Description: API Gateway endpoint URL for workspaces operations
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/" 

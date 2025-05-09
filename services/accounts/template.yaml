@@ -1,5 +1,6 @@
-AWSTemplateFormatVersion: '2010-09-09'
-Transform: AWS::Serverless-2016-10-31
+AWSTemplateFormatVersion: 2010-09-09
+Transform:
+  - AWS::Serverless-2016-10-31
 Description: Nexus Accounts Service - Manages accounts, workspaces, and user roles
 
 Parameters:
@@ -11,6 +12,19 @@ Parameters:
       - staging
       - prod
     Description: Environment name for deployment
+  ServiceName:
+    Type: String
+    Default: nexus-accounts
+  ResourcePrefix:
+    Type: String
+    Default: nexus-accounts
+  IAMResourcePrefix:
+    Type: String
+    Default: Service-Accounts
+  LogLevel:
+    Type: String
+    Default: INFO
+    Description: Log level for Lambda functions
 
 Globals:
   Function:
@@ -21,17 +35,82 @@ Globals:
       - x86_64
     Environment:
       Variables:
-        LOG_LEVEL: INFO
-        ENVIRONMENT: !Ref Environment
+        LOG_LEVEL: !Ref LogLevel
+        SERVICE_NAME: !Ref ServiceName
+        SERVICE_ENVIRONMENT: !Ref Environment
         USER_POOL_ID: !Ref UserPool
         APP_CLIENT_ID: !Ref UserPoolClient
 
+Conditions:
+  IsProd: !Equals [ !Ref Environment, "prod" ]
+  IsNotProd: !Not [ Condition: IsProd ]
+
 Resources:
+  # Roles
+  ApiRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${IAMResourcePrefix}-ApiRole
+      Path: "/nexus/service-role/accounts/"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+                - apigateway.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess
+
+  # Policies
+  AccountsTableCRUDPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub ${IAMResourcePrefix}-AccountsTableCRUD
+      Roles:
+        - !Ref ApiRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - dynamodb:Query
+              - dynamodb:Scan
+              - dynamodb:GetItem
+              - dynamodb:PutItem
+              - dynamodb:UpdateItem
+              - dynamodb:DeleteItem
+              - dynamodb:BatchWriteItem
+              - dynamodb:BatchGetItem
+            Resource:
+              - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${AccountsTable}"
+              - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${AccountsTable}/*"
+
+  CognitoUserPoolPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub ${IAMResourcePrefix}-CognitoUserPool
+      Roles:
+        - !Ref ApiRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - cognito-idp:AdminGetUser
+              - cognito-idp:AdminUpdateUserAttributes
+              - cognito-idp:ListUsers
+            Resource: !GetAtt UserPool.Arn
+
   # DynamoDB Table for Accounts - Multi-tenant design
   AccountsTable:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: !Sub "nexus-accounts-${Environment}"
+      TableName: !Sub ${ResourcePrefix}-${Environment}
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
         - AttributeName: PK
@@ -72,17 +151,27 @@ Resources:
               KeyType: HASH
           Projection:
             ProjectionType: ALL
+      DeletionProtectionEnabled: !If [ IsProd, true, false ]
       Tags:
-        - Key: Environment
-          Value: !Ref Environment
+        - Key: stack-id
+          Value: !Sub "${AWS::StackId}"
+        - Key: stack-name
+          Value: !Sub "${AWS::StackName}"
+        - Key: service-name
+          Value: !Ref ServiceName
 
   # Lambda Functions for Account Management
   AccountManagerFunction:
     Type: AWS::Serverless::Function
+    DependsOn:
+      - AccountsTableCRUDPolicy
+      - CognitoUserPoolPolicy
     Properties:
+      FunctionName: !Sub ${ResourcePrefix}-account-manager
       CodeUri: functions/
       Handler: account_manager.account_manager.lambda_handler
       Description: Manages account CRUD operations
+      Role: !GetAtt ApiRole.Arn
       Environment:
         Variables:
           ACCOUNTS_TABLE: !Ref AccountsTable
@@ -113,25 +202,18 @@ Resources:
           Properties:
             Path: /accounts
             Method: get
-      Policies:
-        - DynamoDBCrudPolicy:
-            TableName: !Ref AccountsTable
-        - Version: "2012-10-17"
-          Statement:
-            - Effect: Allow
-              Action:
-                - cognito-idp:AdminGetUser
-                - cognito-idp:AdminUpdateUserAttributes
-                - cognito-idp:ListUsers
-              Resource: !GetAtt UserPool.Arn
 
   # Lambda Functions for User Role Management
   UserRoleManagerFunction:
     Type: AWS::Serverless::Function
+    DependsOn:
+      - AccountsTableCRUDPolicy
     Properties:
+      FunctionName: !Sub ${ResourcePrefix}-user-role-manager
       CodeUri: functions/
       Handler: user_role_manager.user_role_manager.lambda_handler
       Description: Manages user roles for accounts and workspaces
+      Role: !GetAtt ApiRole.Arn
       Environment:
         Variables:
           ACCOUNTS_TABLE: !Ref AccountsTable
@@ -177,15 +259,12 @@ Resources:
           Properties:
             Path: /workspaces/{workspaceId}/users/roles
             Method: get
-      Policies:
-        - DynamoDBCrudPolicy:
-            TableName: !Ref AccountsTable
 
   # Cognito User Pool (reused from Auth service but with custom attributes)
   UserPool:
     Type: AWS::Cognito::UserPool
     Properties:
-      UserPoolName: !Sub "nexus-users-${Environment}"
+      UserPoolName: !Sub ${ResourcePrefix}-users-${Environment}
       AutoVerifiedAttributes:
         - email
       Schema:
@@ -219,7 +298,7 @@ Resources:
   UserPoolClient:
     Type: AWS::Cognito::UserPoolClient
     Properties:
-      ClientName: !Sub "nexus-app-${Environment}"
+      ClientName: !Sub ${ResourcePrefix}-app-${Environment}
       GenerateSecret: false
       UserPoolId: !Ref UserPool
       ExplicitAuthFlows:
@@ -247,4 +326,8 @@ Outputs:
   
   UserPoolClientId:
     Description: "Cognito User Pool Client ID"
-    Value: !Ref UserPoolClient 
+    Value: !Ref UserPoolClient
+    
+  ApiEndpoint:
+    Description: API Gateway endpoint URL for account operations
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/" 

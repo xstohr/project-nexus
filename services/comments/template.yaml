@@ -1,5 +1,6 @@
-AWSTemplateFormatVersion: '2010-09-09'
-Transform: AWS::Serverless-2016-10-31
+AWSTemplateFormatVersion: 2010-09-09
+Transform:
+  - AWS::Serverless-2016-10-31
 Description: Nexus Comments Service - Handles task comments with multi-tenant support
 
 Parameters:
@@ -11,6 +12,19 @@ Parameters:
       - staging
       - prod
     Description: Environment name for deployment
+  ServiceName:
+    Type: String
+    Default: nexus-comments
+  ResourcePrefix:
+    Type: String
+    Default: nexus-comments
+  IAMResourcePrefix:
+    Type: String
+    Default: Service-Comments
+  LogLevel:
+    Type: String
+    Default: INFO
+    Description: Log level for Lambda functions
 
 Globals:
   Function:
@@ -21,15 +35,79 @@ Globals:
       - x86_64
     Environment:
       Variables:
-        LOG_LEVEL: INFO
-        ENVIRONMENT: !Ref Environment
+        LOG_LEVEL: !Ref LogLevel
+        SERVICE_NAME: !Ref ServiceName
+        SERVICE_ENVIRONMENT: !Ref Environment
+
+Conditions:
+  IsProd: !Equals [ !Ref Environment, "prod" ]
+  IsNotProd: !Not [ Condition: IsProd ]
 
 Resources:
+  # Roles
+  ApiRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${IAMResourcePrefix}-ApiRole
+      Path: "/nexus/service-role/comments/"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+                - apigateway.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess
+
+  # Policies
+  CommentsTableCRUDPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub ${IAMResourcePrefix}-CommentsTableCRUD
+      Roles:
+        - !Ref ApiRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - dynamodb:Query
+              - dynamodb:Scan
+              - dynamodb:GetItem
+              - dynamodb:PutItem
+              - dynamodb:UpdateItem
+              - dynamodb:DeleteItem
+              - dynamodb:BatchWriteItem
+              - dynamodb:BatchGetItem
+            Resource:
+              - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${CommentsTable}"
+              - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${CommentsTable}/*"
+
+  SNSPublishPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub ${IAMResourcePrefix}-SNSPublish
+      Roles:
+        - !Ref ApiRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - sns:Publish
+            Resource:
+              - !Ref CommentEventsTopic
+
   # DynamoDB Table for Comments - Multi-tenant design
   CommentsTable:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: !Sub "nexus-comments-${Environment}"
+      TableName: !Sub ${ResourcePrefix}-${Environment}
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
         - AttributeName: PK
@@ -54,17 +132,27 @@ Resources:
               KeyType: RANGE
           Projection:
             ProjectionType: ALL
+      DeletionProtectionEnabled: !If [ IsProd, true, false ]
       Tags:
-        - Key: Environment
-          Value: !Ref Environment
+        - Key: stack-id
+          Value: !Sub "${AWS::StackId}"
+        - Key: stack-name
+          Value: !Sub "${AWS::StackName}"
+        - Key: service-name
+          Value: !Ref ServiceName
 
   # Lambda Function for Comment Management
   CommentFunction:
     Type: AWS::Serverless::Function
+    DependsOn:
+      - CommentsTableCRUDPolicy
+      - SNSPublishPolicy
     Properties:
+      FunctionName: !Sub ${ResourcePrefix}-comment-management
       CodeUri: functions/comment_management/
       Handler: app.lambda_handler
       Description: Manages comments on tasks
+      Role: !GetAtt ApiRole.Arn
       Environment:
         Variables:
           DYNAMODB_TABLE: !Ref CommentsTable
@@ -95,20 +183,19 @@ Resources:
           Properties:
             Path: /tasks/{taskId}/comments/{commentId}
             Method: delete
-      Policies:
-        - DynamoDBCrudPolicy:
-            TableName: !Ref CommentsTable
-        - SNSPublishMessagePolicy:
-            TopicName: !GetAtt CommentEventsTopic.TopicName
 
   # SNS Topic for Comment Events
   CommentEventsTopic:
     Type: AWS::SNS::Topic
     Properties:
-      TopicName: !Sub "nexus-comment-events-${Environment}"
+      TopicName: !Sub ${ResourcePrefix}-events-${Environment}
       Tags:
-        - Key: Environment
-          Value: !Ref Environment
+        - Key: stack-id
+          Value: !Sub "${AWS::StackId}"
+        - Key: stack-name
+          Value: !Sub "${AWS::StackName}"
+        - Key: service-name
+          Value: !Ref ServiceName
 
 Outputs:
   CommentFunction:
@@ -121,4 +208,8 @@ Outputs:
   
   CommentEventsTopic:
     Description: "Comment Events SNS Topic ARN"
-    Value: !Ref CommentEventsTopic 
+    Value: !Ref CommentEventsTopic
+    
+  ApiEndpoint:
+    Description: API Gateway endpoint URL for comment operations
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/" 

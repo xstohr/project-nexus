@@ -1,147 +1,307 @@
-AWSTemplateFormatVersion: '2010-09-09'
-Transform: AWS::Serverless-2016-10-31
-Description: Nexus Workspaces Service - Manages workspaces for multi-tenant system
+AWSTemplateFormatVersion: 2010-09-09
+Transform:
+  - AWS::Serverless-2016-10-31
+Description: Tasks service for Nexus application
 
 Parameters:
   Environment:
     Type: String
     Default: dev
-    AllowedValues:
-      - dev
-      - staging
-      - prod
-    Description: Environment name for deployment
+    Description: Environment name (dev, prod, etc.)
+  ServiceName:
+    Type: String
+    Default: nexus-tasks
+  ResourcePrefix:
+    Type: String
+    Default: nexus-tasks
+  IAMResourcePrefix:
+    Type: String
+    Default: Service-Tasks
+  TasksTableName:
+    Type: String
+    Default: Tasks
+    Description: DynamoDB table name for tasks
   AccountsTableName:
     Type: String
-    Description: Name of the accounts table from the Accounts service
-
+    Default: Accounts
+    Description: DynamoDB table name for accounts
+  LogLevel:
+    Type: String
+    Default: INFO
+    Description: Log level for Lambda functions
+    
 Globals:
   Function:
-    Timeout: 30
-    MemorySize: 128
-    Runtime: python3.11
-    Architectures:
-      - x86_64
+    Runtime: python3.9
+    MemorySize: 256
+    Timeout: 10
     Environment:
       Variables:
-        LOG_LEVEL: INFO
-        ENVIRONMENT: !Ref Environment
-        ACCOUNTS_TABLE: !Ref AccountsTableName
+        LOG_LEVEL: !Ref LogLevel
+        SERVICE_NAME: !Ref ServiceName
+        SERVICE_ENVIRONMENT: !Ref Environment
+    Architectures:
+      - x86_64
+
+Conditions:
+  IsProd: !Equals [ !Ref Environment, "prod" ]
+  IsNotProd: !Not [ Condition: IsProd ]
 
 Resources:
-  # Lambda Functions for Workspace Management - each function follows single responsibility principle
-  CreateWorkspaceFunction:
-    Type: AWS::Serverless::Function
+  # DynamoDB Table for Tasks
+  TasksTable:
+    Type: AWS::DynamoDB::Table
     Properties:
-      CodeUri: functions/
-      Handler: workspace_manager.create_workspace.handler
-      Description: Creates a new workspace
+      TableName: !Sub ${Environment}-${TasksTableName}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+        - AttributeName: GSI1PK
+          AttributeType: S
+        - AttributeName: GSI1SK
+          AttributeType: S
+        - AttributeName: GSI2PK
+          AttributeType: S
+        - AttributeName: GSI2SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: GSI1
+          KeySchema:
+            - AttributeName: GSI1PK
+              KeyType: HASH
+            - AttributeName: GSI1SK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        - IndexName: GSI2
+          KeySchema:
+            - AttributeName: GSI2PK
+              KeyType: HASH
+            - AttributeName: GSI2SK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      DeletionProtectionEnabled: !If [ IsProd, true, false ]
+      Tags:
+        - Key: stack-id
+          Value: !Sub "${AWS::StackId}"
+        - Key: stack-name
+          Value: !Sub "${AWS::StackName}"
+        - Key: service-name
+          Value: !Ref ServiceName
+
+  # Roles
+  ApiRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${IAMResourcePrefix}-ApiRole
+      Path: "/nexus/service-role/tasks/"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+                - apigateway.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess
+
+  # Policies
+  TablesCRUDPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub ${IAMResourcePrefix}-TablesCRUD
+      Roles:
+        - !Ref ApiRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - dynamodb:Query
+              - dynamodb:Scan
+              - dynamodb:GetItem
+              - dynamodb:PutItem
+              - dynamodb:UpdateItem
+              - dynamodb:DeleteItem
+              - dynamodb:BatchWriteItem
+              - dynamodb:BatchGetItem
+            Resource:
+              - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TasksTable}"
+              - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TasksTable}/*"
+          - Effect: Allow
+            Action:
+              - dynamodb:Query
+              - dynamodb:Scan
+              - dynamodb:GetItem
+              - dynamodb:BatchGetItem
+            Resource:
+              - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${Environment}-${AccountsTableName}"
+              - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${Environment}-${AccountsTableName}/*"
+
+  # Lambda Functions
+  CreateTaskFunction:
+    Type: AWS::Serverless::Function
+    DependsOn:
+      - TablesCRUDPolicy
+    Properties:
+      FunctionName: !Sub ${ResourcePrefix}-create-task
+      Description: Creates a new task in a workspace
+      CodeUri: ./
+      Handler: functions/task_operations/create_task/create_task.handler
+      Role: !GetAtt ApiRole.Arn
       Environment:
         Variables:
-          ACCOUNTS_TABLE: !Ref AccountsTableName
+          TASKS_TABLE: !Ref TasksTable
+          ACCOUNTS_TABLE: !Sub ${Environment}-${AccountsTableName}
       Events:
-        CreateWorkspace:
+        CreateTaskApi:
           Type: Api
           Properties:
-            Path: /accounts/{accountId}/workspaces
+            Path: /workspaces/{workspaceId}/tasks
             Method: post
-      Policies:
-        - DynamoDBCrudPolicy:
-            TableName: !Ref AccountsTableName
 
-  GetWorkspaceFunction:
+  GetTaskFunction:
     Type: AWS::Serverless::Function
+    DependsOn:
+      - TablesCRUDPolicy
     Properties:
-      CodeUri: functions/
-      Handler: workspace_manager.get_workspace.handler
-      Description: Retrieves workspace details
+      FunctionName: !Sub ${ResourcePrefix}-get-task
+      Description: Retrieves task details
+      CodeUri: ./
+      Handler: functions/task_operations/get_task/get_task.handler
+      Role: !GetAtt ApiRole.Arn
       Environment:
         Variables:
-          ACCOUNTS_TABLE: !Ref AccountsTableName
+          TASKS_TABLE: !Ref TasksTable
+          ACCOUNTS_TABLE: !Sub ${Environment}-${AccountsTableName}
       Events:
-        GetWorkspace:
+        GetTaskApi:
           Type: Api
           Properties:
-            Path: /workspaces/{workspaceId}
+            Path: /workspaces/{workspaceId}/tasks/{taskId}
             Method: get
-      Policies:
-        - DynamoDBCrudPolicy:
-            TableName: !Ref AccountsTableName
 
-  UpdateWorkspaceFunction:
+  UpdateTaskFunction:
     Type: AWS::Serverless::Function
+    DependsOn:
+      - TablesCRUDPolicy
     Properties:
-      CodeUri: functions/
-      Handler: workspace_manager.update_workspace.handler
-      Description: Updates workspace details
+      FunctionName: !Sub ${ResourcePrefix}-update-task
+      Description: Updates a task
+      CodeUri: ./
+      Handler: functions/task_operations/update_task/update_task.handler
+      Role: !GetAtt ApiRole.Arn
       Environment:
         Variables:
-          ACCOUNTS_TABLE: !Ref AccountsTableName
+          TASKS_TABLE: !Ref TasksTable
+          ACCOUNTS_TABLE: !Sub ${Environment}-${AccountsTableName}
       Events:
-        UpdateWorkspace:
+        UpdateTaskApi:
           Type: Api
           Properties:
-            Path: /workspaces/{workspaceId}
+            Path: /workspaces/{workspaceId}/tasks/{taskId}
             Method: put
-      Policies:
-        - DynamoDBCrudPolicy:
-            TableName: !Ref AccountsTableName
 
-  DeleteWorkspaceFunction:
+  DeleteTaskFunction:
     Type: AWS::Serverless::Function
+    DependsOn:
+      - TablesCRUDPolicy
     Properties:
-      CodeUri: functions/
-      Handler: workspace_manager.delete_workspace.handler
-      Description: Deletes (deactivates) a workspace
+      FunctionName: !Sub ${ResourcePrefix}-delete-task
+      Description: Deletes a task
+      CodeUri: ./
+      Handler: functions/task_operations/delete_task/delete_task.handler
+      Role: !GetAtt ApiRole.Arn
       Environment:
         Variables:
-          ACCOUNTS_TABLE: !Ref AccountsTableName
+          TASKS_TABLE: !Ref TasksTable
+          ACCOUNTS_TABLE: !Sub ${Environment}-${AccountsTableName}
       Events:
-        DeleteWorkspace:
+        DeleteTaskApi:
           Type: Api
           Properties:
-            Path: /workspaces/{workspaceId}
+            Path: /workspaces/{workspaceId}/tasks/{taskId}
             Method: delete
-      Policies:
-        - DynamoDBCrudPolicy:
-            TableName: !Ref AccountsTableName
 
-  ListWorkspacesFunction:
+  ListTasksFunction:
     Type: AWS::Serverless::Function
+    DependsOn:
+      - TablesCRUDPolicy
     Properties:
-      CodeUri: functions/
-      Handler: workspace_manager.list_workspaces.handler
-      Description: Lists workspaces for an account
+      FunctionName: !Sub ${ResourcePrefix}-list-tasks
+      Description: Lists tasks in a workspace
+      CodeUri: ./
+      Handler: functions/task_operations/list_tasks/list_tasks.handler
+      Role: !GetAtt ApiRole.Arn
       Environment:
         Variables:
-          ACCOUNTS_TABLE: !Ref AccountsTableName
+          TASKS_TABLE: !Ref TasksTable
+          ACCOUNTS_TABLE: !Sub ${Environment}-${AccountsTableName}
       Events:
-        GetWorkspaces:
+        ListTasksApi:
           Type: Api
           Properties:
-            Path: /accounts/{accountId}/workspaces
+            Path: /workspaces/{workspaceId}/tasks
             Method: get
-      Policies:
-        - DynamoDBCrudPolicy:
-            TableName: !Ref AccountsTableName
+
+  AssignTaskFunction:
+    Type: AWS::Serverless::Function
+    DependsOn:
+      - TablesCRUDPolicy
+    Properties:
+      FunctionName: !Sub ${ResourcePrefix}-assign-task
+      Description: Assigns a task to a user
+      CodeUri: ./
+      Handler: functions/task_operations/assign_task/assign_task.handler
+      Role: !GetAtt ApiRole.Arn
+      Environment:
+        Variables:
+          TASKS_TABLE: !Ref TasksTable
+          ACCOUNTS_TABLE: !Sub ${Environment}-${AccountsTableName}
+      Events:
+        AssignTaskApi:
+          Type: Api
+          Properties:
+            Path: /workspaces/{workspaceId}/tasks/{taskId}/assign
+            Method: post
 
 Outputs:
-  CreateWorkspaceFunction:
-    Description: "Create Workspace Lambda Function ARN"
-    Value: !GetAtt CreateWorkspaceFunction.Arn
-  
-  GetWorkspaceFunction:
-    Description: "Get Workspace Lambda Function ARN"
-    Value: !GetAtt GetWorkspaceFunction.Arn
-  
-  UpdateWorkspaceFunction:
-    Description: "Update Workspace Lambda Function ARN"
-    Value: !GetAtt UpdateWorkspaceFunction.Arn
-  
-  DeleteWorkspaceFunction:
-    Description: "Delete Workspace Lambda Function ARN"
-    Value: !GetAtt DeleteWorkspaceFunction.Arn
-  
-  ListWorkspacesFunction:
-    Description: "List Workspaces Lambda Function ARN"
-    Value: !GetAtt ListWorkspacesFunction.Arn 
+  TasksTable:
+    Description: DynamoDB table for tasks
+    Value: !Ref TasksTable
+  CreateTaskFunction:
+    Description: Create Task Lambda Function ARN
+    Value: !GetAtt CreateTaskFunction.Arn
+  GetTaskFunction:
+    Description: Get Task Lambda Function ARN
+    Value: !GetAtt GetTaskFunction.Arn
+  UpdateTaskFunction:
+    Description: Update Task Lambda Function ARN
+    Value: !GetAtt UpdateTaskFunction.Arn
+  DeleteTaskFunction:
+    Description: Delete Task Lambda Function ARN
+    Value: !GetAtt DeleteTaskFunction.Arn
+  ListTasksFunction:
+    Description: List Tasks Lambda Function ARN
+    Value: !GetAtt ListTasksFunction.Arn
+  AssignTaskFunction:
+    Description: Assign Task Lambda Function ARN
+    Value: !GetAtt AssignTaskFunction.Arn
+  ApiEndpoint:
+    Description: API Gateway endpoint URL for task operations
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/" 
