@@ -1,0 +1,147 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Nexus Workspaces Service - Manages workspaces for multi-tenant system
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+    Description: Environment name for deployment
+  AccountsTableName:
+    Type: String
+    Description: Name of the accounts table from the Accounts service
+
+Globals:
+  Function:
+    Timeout: 30
+    MemorySize: 128
+    Runtime: python3.11
+    Architectures:
+      - x86_64
+    Environment:
+      Variables:
+        LOG_LEVEL: INFO
+        ENVIRONMENT: !Ref Environment
+        ACCOUNTS_TABLE: !Ref AccountsTableName
+
+Resources:
+  # Lambda Functions for Workspace Management - each function follows single responsibility principle
+  CreateWorkspaceFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/
+      Handler: workspace_operations.create_workspace.create_workspace.handler
+      Description: Creates a new workspace
+      Environment:
+        Variables:
+          ACCOUNTS_TABLE: !Ref AccountsTableName
+      Events:
+        CreateWorkspace:
+          Type: Api
+          Properties:
+            Path: /accounts/{accountId}/workspaces
+            Method: post
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref AccountsTableName
+
+  GetWorkspaceFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/
+      Handler: workspace_operations.get_workspace.get_workspace.handler
+      Description: Retrieves workspace details
+      Environment:
+        Variables:
+          ACCOUNTS_TABLE: !Ref AccountsTableName
+      Events:
+        GetWorkspace:
+          Type: Api
+          Properties:
+            Path: /workspaces/{workspaceId}
+            Method: get
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref AccountsTableName
+
+  UpdateWorkspaceFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/
+      Handler: workspace_operations.update_workspace.update_workspace.handler
+      Description: Updates workspace details
+      Environment:
+        Variables:
+          ACCOUNTS_TABLE: !Ref AccountsTableName
+      Events:
+        UpdateWorkspace:
+          Type: Api
+          Properties:
+            Path: /workspaces/{workspaceId}
+            Method: put
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref AccountsTableName
+
+  DeleteWorkspaceFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/
+      Handler: workspace_operations.delete_workspace.delete_workspace.handler
+      Description: Deletes (deactivates) a workspace
+      Environment:
+        Variables:
+          ACCOUNTS_TABLE: !Ref AccountsTableName
+      Events:
+        DeleteWorkspace:
+          Type: Api
+          Properties:
+            Path: /workspaces/{workspaceId}
+            Method: delete
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref AccountsTableName
+
+  ListWorkspacesFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/
+      Handler: workspace_operations.list_workspaces.list_workspaces.handler
+      Description: Lists workspaces for an account
+      Environment:
+        Variables:
+          ACCOUNTS_TABLE: !Ref AccountsTableName
+      Events:
+        GetWorkspaces:
+          Type: Api
+          Properties:
+            Path: /accounts/{accountId}/workspaces
+            Method: get
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref AccountsTableName
+
+Outputs:
+  CreateWorkspaceFunction:
+    Description: "Create Workspace Lambda Function ARN"
+    Value: !GetAtt CreateWorkspaceFunction.Arn
+  
+  GetWorkspaceFunction:
+    Description: "Get Workspace Lambda Function ARN"
+    Value: !GetAtt GetWorkspaceFunction.Arn
+  
+  UpdateWorkspaceFunction:
+    Description: "Update Workspace Lambda Function ARN"
+    Value: !GetAtt UpdateWorkspaceFunction.Arn
+  
+  DeleteWorkspaceFunction:
+    Description: "Delete Workspace Lambda Function ARN"
+    Value: !GetAtt DeleteWorkspaceFunction.Arn
+  
+  ListWorkspacesFunction:
+    Description: "List Workspaces Lambda Function ARN"
+    Value: !GetAtt ListWorkspacesFunction.Arn 

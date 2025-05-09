@@ -1,0 +1,450 @@
+openapi: 3.0.0
+info:
+  title: Nexus Tasks API
+  description: APIs for managing tasks in the Nexus multi-tenant platform
+  version: '1.0'
+
+paths:
+  /workspaces/{workspaceId}/tasks:
+    post:
+      summary: Create a new task
+      description: Creates a new task in a workspace
+      tags:
+        - Tasks
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - title
+              properties:
+                title:
+                  type: string
+                  description: Task title
+                  maxLength: 255
+                description:
+                  type: string
+                  description: Detailed task description
+                due_date:
+                  type: string
+                  format: date-time
+                  description: Due date for the task
+                status:
+                  type: string
+                  enum: [BACKLOG, TODO, IN_PROGRESS, DONE]
+                  default: BACKLOG
+                priority:
+                  type: string
+                  enum: [LOW, MEDIUM, HIGH, URGENT]
+                  default: MEDIUM
+                assignee_id:
+                  type: string
+                  description: User ID of the assignee
+                tags:
+                  type: array
+                  items:
+                    type: string
+      responses:
+        '201':
+          description: Task created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+        '400':
+          description: Invalid request parameters
+        '403':
+          description: Not authorized to create tasks in this workspace
+        '404':
+          description: Workspace not found
+        '500':
+          description: Server error
+    
+    get:
+      summary: List tasks
+      description: Returns a list of tasks in a workspace
+      tags:
+        - Tasks
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [BACKLOG, TODO, IN_PROGRESS, DONE, ALL]
+            default: ALL
+        - name: priority
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [LOW, MEDIUM, HIGH, URGENT, ALL]
+            default: ALL
+        - name: assignee_id
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: tags
+          in: query
+          required: false
+          schema:
+            type: array
+            items:
+              type: string
+        - name: search
+          in: query
+          required: false
+          schema:
+            type: string
+            description: Search term for task title or description
+        - name: sort_by
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [created_at, updated_at, due_date, priority]
+            default: created_at
+        - name: sort_order
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 20
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+            description: Pagination cursor
+      responses:
+        '200':
+          description: List of tasks
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tasks:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Task'
+                  cursor:
+                    type: string
+                    description: Pagination cursor for the next page
+        '403':
+          description: Not authorized to view tasks in this workspace
+        '404':
+          description: Workspace not found
+        '500':
+          description: Server error
+
+  /workspaces/{workspaceId}/tasks/{taskId}:
+    get:
+      summary: Get task details
+      description: Returns details for a specific task
+      tags:
+        - Tasks
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: taskId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Task details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+        '403':
+          description: Not authorized to view this task
+        '404':
+          description: Task not found
+        '500':
+          description: Server error
+    
+    put:
+      summary: Update task
+      description: Updates details for a specific task
+      tags:
+        - Tasks
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: taskId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                  maxLength: 255
+                description:
+                  type: string
+                due_date:
+                  type: string
+                  format: date-time
+                status:
+                  type: string
+                  enum: [BACKLOG, TODO, IN_PROGRESS, DONE]
+                priority:
+                  type: string
+                  enum: [LOW, MEDIUM, HIGH, URGENT]
+                assignee_id:
+                  type: string
+                tags:
+                  type: array
+                  items:
+                    type: string
+      responses:
+        '200':
+          description: Task updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+        '400':
+          description: Invalid request parameters
+        '403':
+          description: Not authorized to update this task
+        '404':
+          description: Task not found
+        '500':
+          description: Server error
+    
+    delete:
+      summary: Delete task
+      description: Deletes a task
+      tags:
+        - Tasks
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: taskId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Task deleted successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  task_id:
+                    type: string
+        '403':
+          description: Not authorized to delete this task
+        '404':
+          description: Task not found
+        '500':
+          description: Server error
+
+  /workspaces/{workspaceId}/tasks/{taskId}/status:
+    put:
+      summary: Update task status
+      description: Updates only the status of a task (optimized endpoint for status changes)
+      tags:
+        - Tasks
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: taskId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - status
+              properties:
+                status:
+                  type: string
+                  enum: [BACKLOG, TODO, IN_PROGRESS, DONE]
+      responses:
+        '200':
+          description: Task status updated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  task_id:
+                    type: string
+                  status:
+                    type: string
+                  updated_at:
+                    type: string
+                    format: date-time
+        '400':
+          description: Invalid status value
+        '403':
+          description: Not authorized to update this task
+        '404':
+          description: Task not found
+        '500':
+          description: Server error
+
+  /workspaces/{workspaceId}/tasks/{taskId}/assignee:
+    put:
+      summary: Update task assignee
+      description: Updates only the assignee of a task (optimized endpoint for assignment)
+      tags:
+        - Tasks
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: taskId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                assignee_id:
+                  type: string
+                  description: User ID of the new assignee (or null to unassign)
+      responses:
+        '200':
+          description: Task assignee updated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  task_id:
+                    type: string
+                  assignee_id:
+                    type: string
+                  updated_at:
+                    type: string
+                    format: date-time
+        '403':
+          description: Not authorized to update this task
+        '404':
+          description: Task not found
+        '500':
+          description: Server error
+
+components:
+  schemas:
+    Task:
+      type: object
+      properties:
+        task_id:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+        workspace_id:
+          type: string
+        account_id:
+          type: string
+        status:
+          type: string
+          enum: [BACKLOG, TODO, IN_PROGRESS, DONE]
+        priority:
+          type: string
+          enum: [LOW, MEDIUM, HIGH, URGENT]
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        due_date:
+          type: string
+          format: date-time
+        created_by:
+          type: object
+          properties:
+            user_id:
+              type: string
+            name:
+              type: string
+        assignee:
+          type: object
+          properties:
+            user_id:
+              type: string
+            name:
+              type: string
+            email:
+              type: string
+        tags:
+          type: array
+          items:
+            type: string
+        comment_count:
+          type: integer
+
+  securitySchemes:
+    cognitoAuth:
+      type: apiKey
+      name: Authorization
+      in: header
+      x-amazon-apigateway-authtype: cognito_user_pools
+
+security:
+  - cognitoAuth: [] 

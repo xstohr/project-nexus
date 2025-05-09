@@ -1,0 +1,218 @@
+openapi: 3.0.0
+info:
+  title: Nexus Workspaces API
+  description: APIs for managing workspaces in the Nexus multi-tenant platform
+  version: '1.0'
+
+paths:
+  /accounts/{accountId}/workspaces:
+    post:
+      summary: Create a new workspace
+      description: Creates a new workspace within the specified account
+      tags:
+        - Workspaces
+      parameters:
+        - name: accountId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - workspace_name
+              properties:
+                workspace_name:
+                  type: string
+                  description: Name of the workspace
+                description:
+                  type: string
+                  description: Optional description for the workspace
+      responses:
+        '201':
+          description: Workspace created successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  workspace_id:
+                    type: string
+                  workspace_name:
+                    type: string
+                  account_id:
+                    type: string
+        '400':
+          description: Invalid request parameters
+        '404':
+          description: Account not found
+        '500':
+          description: Server error
+    
+    get:
+      summary: List workspaces for an account
+      description: Returns a list of all workspaces belonging to an account
+      tags:
+        - Workspaces
+      parameters:
+        - name: accountId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of workspaces
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  workspaces:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        workspace_id:
+                          type: string
+                        workspace_name:
+                          type: string
+                        status:
+                          type: string
+                        created_at:
+                          type: string
+                          format: date-time
+        '404':
+          description: Account not found
+        '500':
+          description: Server error
+
+  /workspaces/{workspaceId}:
+    get:
+      summary: Get workspace details
+      description: Returns details for a specific workspace
+      tags:
+        - Workspaces
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Workspace details
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  workspace_id:
+                    type: string
+                  workspace_name:
+                    type: string
+                  account_id:
+                    type: string
+                  owner_id:
+                    type: string
+                  status:
+                    type: string
+                  created_at:
+                    type: string
+                    format: date-time
+                  updated_at:
+                    type: string
+                    format: date-time
+        '404':
+          description: Workspace not found
+        '500':
+          description: Server error
+    
+    put:
+      summary: Update workspace details
+      description: Updates information for a specific workspace
+      tags:
+        - Workspaces
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                workspace_name:
+                  type: string
+                  description: New name for the workspace
+                status:
+                  type: string
+                  description: New status for the workspace
+                  enum: [ACTIVE, INACTIVE]
+      responses:
+        '200':
+          description: Workspace updated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  workspace_id:
+                    type: string
+        '400':
+          description: Invalid request parameters
+        '404':
+          description: Workspace not found
+        '500':
+          description: Server error
+    
+    delete:
+      summary: Delete workspace
+      description: Deletes (deactivates) a workspace
+      tags:
+        - Workspaces
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Workspace deleted successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  workspace_id:
+                    type: string
+        '404':
+          description: Workspace not found
+        '500':
+          description: Server error
+
+components:
+  securitySchemes:
+    cognitoAuth:
+      type: apiKey
+      name: Authorization
+      in: header
+      x-amazon-apigateway-authtype: cognito_user_pools
+
+security:
+  - cognitoAuth: [] 

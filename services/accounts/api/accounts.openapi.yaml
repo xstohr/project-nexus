@@ -1,0 +1,432 @@
+openapi: 3.0.0
+info:
+  title: Nexus Accounts API
+  description: APIs for managing accounts and users in the Nexus multi-tenant platform
+  version: '1.0'
+
+paths:
+  /accounts:
+    post:
+      summary: Create a new account
+      description: Creates a new tenant account in the system
+      tags:
+        - Accounts
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - account_name
+                - owner_email
+                - owner_name
+              properties:
+                account_name:
+                  type: string
+                  description: Name of the account/organization
+                owner_email:
+                  type: string
+                  format: email
+                  description: Email address of the account owner
+                owner_name:
+                  type: string
+                  description: Name of the account owner
+                industry:
+                  type: string
+                  description: Industry the account operates in
+      responses:
+        '201':
+          description: Account created successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  account_id:
+                    type: string
+                  account_name:
+                    type: string
+        '400':
+          description: Invalid request parameters
+        '409':
+          description: Account with this email already exists
+        '500':
+          description: Server error
+    
+    get:
+      summary: List accounts
+      description: Returns a list of accounts the user has access to
+      tags:
+        - Accounts
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 10
+        - name: next_token
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of accounts
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accounts:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        account_id:
+                          type: string
+                        account_name:
+                          type: string
+                        owner_email:
+                          type: string
+                        created_at:
+                          type: string
+                          format: date-time
+                        status:
+                          type: string
+                  next_token:
+                    type: string
+                    description: Token for pagination
+        '500':
+          description: Server error
+
+  /accounts/{accountId}:
+    get:
+      summary: Get account details
+      description: Returns details for a specific account
+      tags:
+        - Accounts
+      parameters:
+        - name: accountId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Account details
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  account_id:
+                    type: string
+                  account_name:
+                    type: string
+                  owner_email:
+                    type: string
+                  owner_id:
+                    type: string
+                  status:
+                    type: string
+                  created_at:
+                    type: string
+                    format: date-time
+                  updated_at:
+                    type: string
+                    format: date-time
+                  industry:
+                    type: string
+                  workspace_count:
+                    type: integer
+                  user_count:
+                    type: integer
+        '403':
+          description: Not authorized to access this account
+        '404':
+          description: Account not found
+        '500':
+          description: Server error
+    
+    put:
+      summary: Update account details
+      description: Updates information for a specific account
+      tags:
+        - Accounts
+      parameters:
+        - name: accountId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                account_name:
+                  type: string
+                  description: Updated name for the account
+                status:
+                  type: string
+                  description: New status for the account
+                  enum: [ACTIVE, SUSPENDED, CLOSED]
+                industry:
+                  type: string
+                  description: Updated industry classification
+      responses:
+        '200':
+          description: Account updated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  account_id:
+                    type: string
+        '400':
+          description: Invalid request parameters
+        '403':
+          description: Not authorized to update this account
+        '404':
+          description: Account not found
+        '500':
+          description: Server error
+    
+    delete:
+      summary: Delete account
+      description: Deletes (deactivates) an account
+      tags:
+        - Accounts
+      parameters:
+        - name: accountId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Account deleted successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  account_id:
+                    type: string
+        '403':
+          description: Not authorized to delete this account
+        '404':
+          description: Account not found
+        '500':
+          description: Server error
+
+  /accounts/{accountId}/users/roles:
+    post:
+      summary: Assign user role
+      description: Assigns a role to a user within an account
+      tags:
+        - User Roles
+      parameters:
+        - name: accountId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - email
+                - role
+              properties:
+                email:
+                  type: string
+                  format: email
+                  description: Email address of the user
+                role:
+                  type: string
+                  description: Role to assign to the user
+                  enum: [ADMIN, SUPER_USER, USER]
+      responses:
+        '201':
+          description: Role assigned successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  user_id:
+                    type: string
+                  email:
+                    type: string
+                  role:
+                    type: string
+                  account_id:
+                    type: string
+        '400':
+          description: Invalid request parameters
+        '403':
+          description: Not authorized to assign roles in this account
+        '404':
+          description: Account not found
+        '500':
+          description: Server error
+    
+    get:
+      summary: List users with roles
+      description: Lists all users with their roles in an account
+      tags:
+        - User Roles
+      parameters:
+        - name: accountId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of users with roles
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  users:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        user_id:
+                          type: string
+                        email:
+                          type: string
+                        role:
+                          type: string
+                        name:
+                          type: string
+                        created_at:
+                          type: string
+                          format: date-time
+        '403':
+          description: Not authorized to view roles in this account
+        '404':
+          description: Account not found
+        '500':
+          description: Server error
+
+  /accounts/{accountId}/users/{userId}/roles:
+    put:
+      summary: Update user role
+      description: Updates a user's role within an account
+      tags:
+        - User Roles
+      parameters:
+        - name: accountId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - role
+              properties:
+                role:
+                  type: string
+                  description: New role to assign to the user
+                  enum: [ADMIN, SUPER_USER, USER]
+      responses:
+        '200':
+          description: Role updated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  user_id:
+                    type: string
+                  role:
+                    type: string
+        '400':
+          description: Invalid request parameters
+        '403':
+          description: Not authorized to update roles in this account
+        '404':
+          description: Account or user not found
+        '500':
+          description: Server error
+    
+    delete:
+      summary: Remove user role
+      description: Removes a user from an account by deleting their role
+      tags:
+        - User Roles
+      parameters:
+        - name: accountId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: User removed from account successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  user_id:
+                    type: string
+                  account_id:
+                    type: string
+        '403':
+          description: Not authorized to remove users from this account
+        '404':
+          description: Account or user not found
+        '500':
+          description: Server error
+
+components:
+  securitySchemes:
+    cognitoAuth:
+      type: apiKey
+      name: Authorization
+      in: header
+      x-amazon-apigateway-authtype: cognito_user_pools
+
+security:
+  - cognitoAuth: [] 
