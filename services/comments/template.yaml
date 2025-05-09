@@ -1,0 +1,124 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Nexus Comments Service - Handles task comments with multi-tenant support
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+    Description: Environment name for deployment
+
+Globals:
+  Function:
+    Timeout: 30
+    MemorySize: 128
+    Runtime: python3.11
+    Architectures:
+      - x86_64
+    Environment:
+      Variables:
+        LOG_LEVEL: INFO
+        ENVIRONMENT: !Ref Environment
+
+Resources:
+  # DynamoDB Table for Comments - Multi-tenant design
+  CommentsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "nexus-comments-${Environment}"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+        - AttributeName: GSI1PK
+          AttributeType: S
+        - AttributeName: GSI1SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK  # Format: TENANT#{tenantId}#TASK#{taskId}
+          KeyType: HASH
+        - AttributeName: SK  # Format: COMMENT#{commentId}
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: GSI1
+          KeySchema:
+            - AttributeName: GSI1PK  # Format: TENANT#{tenantId}#USER#{userId}
+              KeyType: HASH
+            - AttributeName: GSI1SK  # Format: CREATED#{timestamp}
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Lambda Function for Comment Management
+  CommentFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/comment_management/
+      Handler: app.lambda_handler
+      Description: Manages comments on tasks
+      Environment:
+        Variables:
+          DYNAMODB_TABLE: !Ref CommentsTable
+          SNS_TOPIC_ARN: !Ref CommentEventsTopic
+      Events:
+        CreateComment:
+          Type: Api
+          Properties:
+            Path: /tasks/{taskId}/comments
+            Method: post
+        GetComments:
+          Type: Api
+          Properties:
+            Path: /tasks/{taskId}/comments
+            Method: get
+        GetComment:
+          Type: Api
+          Properties:
+            Path: /tasks/{taskId}/comments/{commentId}
+            Method: get
+        UpdateComment:
+          Type: Api
+          Properties:
+            Path: /tasks/{taskId}/comments/{commentId}
+            Method: put
+        DeleteComment:
+          Type: Api
+          Properties:
+            Path: /tasks/{taskId}/comments/{commentId}
+            Method: delete
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref CommentsTable
+        - SNSPublishMessagePolicy:
+            TopicName: !GetAtt CommentEventsTopic.TopicName
+
+  # SNS Topic for Comment Events
+  CommentEventsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "nexus-comment-events-${Environment}"
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+Outputs:
+  CommentFunction:
+    Description: "Comment Lambda Function ARN"
+    Value: !GetAtt CommentFunction.Arn
+  
+  CommentsTable:
+    Description: "Comments DynamoDB Table Name"
+    Value: !Ref CommentsTable
+  
+  CommentEventsTopic:
+    Description: "Comment Events SNS Topic ARN"
+    Value: !Ref CommentEventsTopic 

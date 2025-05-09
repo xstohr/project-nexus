@@ -40,6 +40,20 @@ Resources:
       Parameters:
         Environment: !Ref Environment
 
+  AccountsService:
+    Type: AWS::Serverless::Application
+    Properties:
+      Location: ./services/accounts/template.yaml
+      Parameters:
+        Environment: !Ref Environment
+
+  CommentsService:
+    Type: AWS::Serverless::Application
+    Properties:
+      Location: ./services/comments/template.yaml
+      Parameters:
+        Environment: !Ref Environment
+
   # Additional services will be added here
 
 Outputs:
@@ -71,4 +85,22 @@ Outputs:
   
   UserPoolClientId:
     Description: "Cognito User Pool Client ID"
-    Value: !GetAtt AuthService.Outputs.UserPoolClientId 
+    Value: !GetAtt AuthService.Outputs.UserPoolClientId
+  
+  # Accounts Service outputs
+  AccountsFunction:
+    Description: "Account Management Lambda Function ARN"
+    Value: !GetAtt AccountsService.Outputs.AccountManagementFunction
+  
+  AccountsTable:
+    Description: "Accounts DynamoDB Table Name"
+    Value: !GetAtt AccountsService.Outputs.AccountsTable
+  
+  # Comments Service outputs
+  CommentsFunction:
+    Description: "Comments Lambda Function ARN"
+    Value: !GetAtt CommentsService.Outputs.CommentFunction
+  
+  CommentsTable:
+    Description: "Comments DynamoDB Table Name"
+    Value: !GetAtt CommentsService.Outputs.CommentsTable 

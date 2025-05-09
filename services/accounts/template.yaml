@@ -1,0 +1,197 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Nexus Accounts Service - Manages accounts, workspaces, and user roles
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+    Description: Environment name for deployment
+
+Globals:
+  Function:
+    Timeout: 30
+    MemorySize: 128
+    Runtime: python3.11
+    Architectures:
+      - x86_64
+    Environment:
+      Variables:
+        LOG_LEVEL: INFO
+        ENVIRONMENT: !Ref Environment
+        USER_POOL_ID: !Ref UserPool
+        APP_CLIENT_ID: !Ref UserPoolClient
+
+Resources:
+  # DynamoDB Table for Accounts - Multi-tenant design
+  AccountsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "nexus-accounts-${Environment}"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+        - AttributeName: GSI1PK
+          AttributeType: S
+        - AttributeName: GSI1SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK  # Format: ACCOUNT#{accountId} or WORKSPACE#{workspaceId}
+          KeyType: HASH
+        - AttributeName: SK  # Format: METADATA or USER#{userId} or ROLE#{roleId}
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: GSI1
+          KeySchema:
+            - AttributeName: GSI1PK  # Format: USER#{userId}
+              KeyType: HASH
+            - AttributeName: GSI1SK  # Format: ACCOUNT#{accountId} or WORKSPACE#{workspaceId}
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Lambda Functions for Account Management
+  AccountManagementFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/account_management/
+      Handler: app.lambda_handler
+      Description: Manages accounts, workspaces, and user roles
+      Environment:
+        Variables:
+          ACCOUNTS_TABLE: !Ref AccountsTable
+          USER_POOL_ID: !Ref UserPool
+      Events:
+        # Account Management Endpoints
+        CreateAccount:
+          Type: Api
+          Properties:
+            Path: /accounts
+            Method: post
+        GetAccount:
+          Type: Api
+          Properties:
+            Path: /accounts/{accountId}
+            Method: get
+        UpdateAccount:
+          Type: Api
+          Properties:
+            Path: /accounts/{accountId}
+            Method: put
+        # Workspace Management Endpoints
+        CreateWorkspace:
+          Type: Api
+          Properties:
+            Path: /accounts/{accountId}/workspaces
+            Method: post
+        GetWorkspaces:
+          Type: Api
+          Properties:
+            Path: /accounts/{accountId}/workspaces
+            Method: get
+        GetWorkspace:
+          Type: Api
+          Properties:
+            Path: /workspaces/{workspaceId}
+            Method: get
+        UpdateWorkspace:
+          Type: Api
+          Properties:
+            Path: /workspaces/{workspaceId}
+            Method: put
+        # User Role Management Endpoints
+        AssignUserRole:
+          Type: Api
+          Properties:
+            Path: /accounts/{accountId}/users/{userId}/roles
+            Method: post
+        GetUserRoles:
+          Type: Api
+          Properties:
+            Path: /users/{userId}/roles
+            Method: get
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref AccountsTable
+        - Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Action:
+                - cognito-idp:AdminGetUser
+                - cognito-idp:AdminUpdateUserAttributes
+                - cognito-idp:ListUsers
+              Resource: !GetAtt UserPool.Arn
+
+  # Cognito User Pool (reused from Auth service but with custom attributes)
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub "nexus-users-${Environment}"
+      AutoVerifiedAttributes:
+        - email
+      Schema:
+        - Name: email
+          AttributeDataType: String
+          Mutable: true
+          Required: true
+        - Name: name
+          AttributeDataType: String
+          Mutable: true
+          Required: true
+        - Name: custom:accountId
+          AttributeDataType: String
+          Mutable: true
+          Required: false
+        - Name: custom:role
+          AttributeDataType: String
+          Mutable: true
+          Required: false
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: false
+          RequireUppercase: true
+      UsernameAttributes:
+        - email
+
+  # Cognito User Pool Client
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: !Sub "nexus-app-${Environment}"
+      GenerateSecret: false
+      UserPoolId: !Ref UserPool
+      ExplicitAuthFlows:
+        - ALLOW_USER_PASSWORD_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+        - ALLOW_USER_SRP_AUTH
+      PreventUserExistenceErrors: ENABLED
+
+Outputs:
+  AccountManagementFunction:
+    Description: "Account Management Lambda Function ARN"
+    Value: !GetAtt AccountManagementFunction.Arn
+  
+  AccountsTable:
+    Description: "Accounts DynamoDB Table Name"
+    Value: !Ref AccountsTable
+  
+  UserPoolId:
+    Description: "Cognito User Pool ID"
+    Value: !Ref UserPool
+  
+  UserPoolClientId:
+    Description: "Cognito User Pool Client ID"
+    Value: !Ref UserPoolClient 
