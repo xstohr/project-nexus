@@ -1,0 +1,131 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Nexus API Service
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+    Description: Environment name for deployment
+
+Globals:
+  Function:
+    Timeout: 30
+    MemorySize: 128
+    Runtime: python3.11
+    Architectures:
+      - x86_64
+    Environment:
+      Variables:
+        LOG_LEVEL: INFO
+        ENVIRONMENT: !Ref Environment
+
+Resources:
+  # API Gateway definition
+  NexusApiGateway:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: !Ref Environment
+      Cors:
+        AllowMethods: "'GET,POST,PUT,DELETE,OPTIONS'"
+        AllowHeaders: "'Content-Type,Authorization'"
+        AllowOrigin: "'*'"
+
+  # Lambda Functions
+  HealthCheckFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/health_check/
+      Handler: app.lambda_handler
+      Description: API health check endpoint
+      Events:
+        HealthCheck:
+          Type: Api
+          Properties:
+            RestApiId: !Ref NexusApiGateway
+            Path: /health
+            Method: get
+      Policies:
+        - AWSLambdaBasicExecutionRole
+
+  ResourcesFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/resources/
+      Handler: app.lambda_handler
+      Description: Resources API endpoint
+      Events:
+        GetResources:
+          Type: Api
+          Properties:
+            RestApiId: !Ref NexusApiGateway
+            Path: /resources
+            Method: get
+        CreateResource:
+          Type: Api
+          Properties:
+            RestApiId: !Ref NexusApiGateway
+            Path: /resources
+            Method: post
+        GetResource:
+          Type: Api
+          Properties:
+            RestApiId: !Ref NexusApiGateway
+            Path: /resources/{id}
+            Method: get
+        UpdateResource:
+          Type: Api
+          Properties:
+            RestApiId: !Ref NexusApiGateway
+            Path: /resources/{id}
+            Method: put
+        DeleteResource:
+          Type: Api
+          Properties:
+            RestApiId: !Ref NexusApiGateway
+            Path: /resources/{id}
+            Method: delete
+      Environment:
+        Variables:
+          DYNAMODB_TABLE: !Sub "nexus-resources-${Environment}"
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - DynamoDBCrudPolicy:
+            TableName: !Sub "nexus-resources-${Environment}"
+
+  # DynamoDB Table for resources
+  ResourcesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "nexus-resources-${Environment}"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+Outputs:
+  ApiEndpoint:
+    Description: "API Gateway endpoint URL"
+    Value: !Sub "https://${NexusApiGateway}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/"
+  
+  HealthCheckFunction:
+    Description: "Health Check Lambda Function ARN"
+    Value: !GetAtt HealthCheckFunction.Arn
+  
+  ResourcesFunction:
+    Description: "Resources Lambda Function ARN"
+    Value: !GetAtt ResourcesFunction.Arn
+  
+  ResourcesTable:
+    Description: "Resources DynamoDB Table Name"
+    Value: !Ref ResourcesTable 

@@ -1,0 +1,74 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Nexus - A modern cloud-based application using AWS SAM
+
+# More info about Globals: https://github.com/awslabs/serverless-application-model/blob/master/docs/globals.rst
+Globals:
+  Function:
+    Timeout: 30
+    MemorySize: 128
+    Runtime: python3.11
+    Architectures:
+      - x86_64
+    Environment:
+      Variables:
+        LOG_LEVEL: INFO
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+    Description: Environment name for deployment
+
+Resources:
+  # Nested stacks for each service
+  ApiService:
+    Type: AWS::Serverless::Application
+    Properties:
+      Location: ./services/api/template.yaml
+      Parameters:
+        Environment: !Ref Environment
+
+  AuthService:
+    Type: AWS::Serverless::Application
+    Properties:
+      Location: ./services/auth/template.yaml
+      Parameters:
+        Environment: !Ref Environment
+
+  # Additional services will be added here
+
+Outputs:
+  # API Service outputs
+  ApiEndpoint:
+    Description: "API Gateway endpoint URL"
+    Value: !GetAtt ApiService.Outputs.ApiEndpoint
+  
+  ApiHealthCheckFunction:
+    Description: "Health Check Lambda Function ARN"
+    Value: !GetAtt ApiService.Outputs.HealthCheckFunction
+  
+  ApiResourcesFunction:
+    Description: "Resources Lambda Function ARN"
+    Value: !GetAtt ApiService.Outputs.ResourcesFunction
+  
+  ApiResourcesTable:
+    Description: "Resources DynamoDB Table Name"
+    Value: !GetAtt ApiService.Outputs.ResourcesTable
+  
+  # Auth Service outputs
+  AuthFunction:
+    Description: "Auth Lambda Function ARN"
+    Value: !GetAtt AuthService.Outputs.AuthFunction
+  
+  UserPoolId:
+    Description: "Cognito User Pool ID"
+    Value: !GetAtt AuthService.Outputs.UserPoolId
+  
+  UserPoolClientId:
+    Description: "Cognito User Pool Client ID"
+    Value: !GetAtt AuthService.Outputs.UserPoolClientId 

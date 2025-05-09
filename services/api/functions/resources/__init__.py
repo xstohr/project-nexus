@@ -1,0 +1,1 @@
+"""Resources Lambda function package.""" 
