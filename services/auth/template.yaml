@@ -1,5 +1,6 @@
-AWSTemplateFormatVersion: '2010-09-09'
-Transform: AWS::Serverless-2016-10-31
+AWSTemplateFormatVersion: 2010-09-09
+Transform:
+  - AWS::Serverless-2016-10-31
 Description: Nexus Auth Service
 
 Parameters:
@@ -11,6 +12,19 @@ Parameters:
       - staging
       - prod
     Description: Environment name for deployment
+  ServiceName:
+    Type: String
+    Default: nexus-auth
+  ResourcePrefix:
+    Type: String
+    Default: nexus-auth
+  IAMResourcePrefix:
+    Type: String
+    Default: Service-Auth
+  LogLevel:
+    Type: String
+    Default: INFO
+    Description: Log level for Lambda functions
 
 Globals:
   Function:
@@ -21,38 +35,95 @@ Globals:
       - x86_64
     Environment:
       Variables:
-        LOG_LEVEL: INFO
-        ENVIRONMENT: !Ref Environment
+        LOG_LEVEL: !Ref LogLevel
+        SERVICE_NAME: !Ref ServiceName
+        SERVICE_ENVIRONMENT: !Ref Environment
+
+Conditions:
+  IsProd: !Equals [ !Ref Environment, "prod" ]
+  IsNotProd: !Not [ Condition: IsProd ]
 
 Resources:
+  # Roles
+  AuthRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${IAMResourcePrefix}-AuthRole
+      Path: "/nexus/service-role/auth/"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+                - apigateway.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess
+
+  # Policies
+  CognitoUserPoolPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub ${IAMResourcePrefix}-CognitoUserPool
+      Roles:
+        - !Ref AuthRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - cognito-idp:AdminCreateUser
+              - cognito-idp:AdminSetUserPassword
+              - cognito-idp:AdminInitiateAuth
+              - cognito-idp:AdminGetUser
+            Resource: !GetAtt UserPool.Arn
+
   # Lambda Functions
   AuthFunction:
     Type: AWS::Serverless::Function
+    DependsOn:
+      - CognitoUserPoolPolicy
     Properties:
+      FunctionName: !Sub ${ResourcePrefix}-authentication
       CodeUri: functions/auth/
       Handler: app.lambda_handler
       Description: Authentication and authorization functions
+      Role: !GetAtt AuthRole.Arn
       Environment:
         Variables:
           USER_POOL_ID: !Ref UserPool
           APP_CLIENT_ID: !Ref UserPoolClient
-      Policies:
-        - AWSLambdaBasicExecutionRole
-        - Version: "2012-10-17"
-          Statement:
-            - Effect: Allow
-              Action:
-                - cognito-idp:AdminCreateUser
-                - cognito-idp:AdminSetUserPassword
-                - cognito-idp:AdminInitiateAuth
-                - cognito-idp:AdminGetUser
-              Resource: !GetAtt UserPool.Arn
+      Events:
+        Login:
+          Type: Api
+          Properties:
+            Path: /auth/login
+            Method: post
+        Register:
+          Type: Api
+          Properties:
+            Path: /auth/register
+            Method: post
+        ChangePassword:
+          Type: Api
+          Properties:
+            Path: /auth/password
+            Method: put
+        GetUser:
+          Type: Api
+          Properties:
+            Path: /auth/me
+            Method: get
 
   # Cognito User Pool
   UserPool:
     Type: AWS::Cognito::UserPool
     Properties:
-      UserPoolName: !Sub "nexus-users-${Environment}"
+      UserPoolName: !Sub ${ResourcePrefix}-users-${Environment}
       AutoVerifiedAttributes:
         - email
       Schema:
@@ -73,12 +144,13 @@ Resources:
           RequireUppercase: true
       UsernameAttributes:
         - email
+      DeletionProtection: !If [IsProd, ACTIVE, INACTIVE]
 
   # Cognito User Pool Client
   UserPoolClient:
     Type: AWS::Cognito::UserPoolClient
     Properties:
-      ClientName: !Sub "nexus-app-${Environment}"
+      ClientName: !Sub ${ResourcePrefix}-app-${Environment}
       GenerateSecret: false
       UserPoolId: !Ref UserPool
       ExplicitAuthFlows:
@@ -98,4 +170,8 @@ Outputs:
   
   UserPoolClientId:
     Description: "Cognito User Pool Client ID"
-    Value: !Ref UserPoolClient 
+    Value: !Ref UserPoolClient
+    
+  ApiEndpoint:
+    Description: API Gateway endpoint URL for auth operations
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/" 

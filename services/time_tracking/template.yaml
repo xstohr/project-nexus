@@ -1,6 +1,7 @@
-AWSTemplateFormatVersion: '2010-09-09'
-Transform: AWS::Serverless-2016-10-31
-Description: Nexus Workspaces Service - Manages workspaces for multi-tenant system
+AWSTemplateFormatVersion: 2010-09-09
+Transform:
+  - AWS::Serverless-2016-10-31
+Description: Nexus Time Tracking Service - Manages time entries for tasks
 
 Parameters:
   Environment:
@@ -11,9 +12,22 @@ Parameters:
       - staging
       - prod
     Description: Environment name for deployment
+  ServiceName:
+    Type: String
+    Default: nexus-time-tracking
+  ResourcePrefix:
+    Type: String
+    Default: nexus-time-tracking
+  IAMResourcePrefix:
+    Type: String
+    Default: Service-TimeTracking
   AccountsTableName:
     Type: String
     Description: Name of the accounts table from the Accounts service
+  LogLevel:
+    Type: String
+    Default: INFO
+    Description: Log level for Lambda functions
 
 Globals:
   Function:
@@ -24,124 +38,238 @@ Globals:
       - x86_64
     Environment:
       Variables:
-        LOG_LEVEL: INFO
-        ENVIRONMENT: !Ref Environment
+        LOG_LEVEL: !Ref LogLevel
+        SERVICE_NAME: !Ref ServiceName
+        SERVICE_ENVIRONMENT: !Ref Environment
         ACCOUNTS_TABLE: !Ref AccountsTableName
+        TIME_ENTRIES_TABLE: !Ref TimeEntriesTable
+
+Conditions:
+  IsProd: !Equals [ !Ref Environment, "prod" ]
+  IsNotProd: !Not [ Condition: IsProd ]
 
 Resources:
-  # Lambda Functions for Workspace Management - each function follows single responsibility principle
-  CreateWorkspaceFunction:
-    Type: AWS::Serverless::Function
+  # Roles
+  ApiRole:
+    Type: AWS::IAM::Role
     Properties:
+      RoleName: !Sub ${IAMResourcePrefix}-ApiRole
+      Path: "/nexus/service-role/time-tracking/"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+                - apigateway.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess
+
+  # Policies
+  TimeTrackingCRUDPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub ${IAMResourcePrefix}-TimeTrackingCRUD
+      Roles:
+        - !Ref ApiRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - dynamodb:Query
+              - dynamodb:Scan
+              - dynamodb:GetItem
+              - dynamodb:PutItem
+              - dynamodb:UpdateItem
+              - dynamodb:DeleteItem
+              - dynamodb:BatchWriteItem
+              - dynamodb:BatchGetItem
+            Resource:
+              - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TimeEntriesTable}"
+              - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TimeEntriesTable}/*"
+          - Effect: Allow
+            Action:
+              - dynamodb:Query
+              - dynamodb:GetItem
+            Resource:
+              - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${AccountsTableName}"
+              - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${AccountsTableName}/*"
+
+  # DynamoDB Table for Time Entries
+  TimeEntriesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub ${ResourcePrefix}-${Environment}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+        - AttributeName: GSI1PK
+          AttributeType: S
+        - AttributeName: GSI1SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK  # Format: WORKSPACE#{workspaceId}#TASK#{taskId}
+          KeyType: HASH
+        - AttributeName: SK  # Format: TIMEENTRY#{timeEntryId}
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: GSI1
+          KeySchema:
+            - AttributeName: GSI1PK  # Format: USER#{userId}
+              KeyType: HASH
+            - AttributeName: GSI1SK  # Format: DATE#{date}
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      DeletionProtectionEnabled: !If [ IsProd, true, false ]
+      Tags:
+        - Key: stack-id
+          Value: !Sub "${AWS::StackId}"
+        - Key: stack-name
+          Value: !Sub "${AWS::StackName}"
+        - Key: service-name
+          Value: !Ref ServiceName
+
+  # Lambda Functions for Time Tracking
+  CreateTimeEntryFunction:
+    Type: AWS::Serverless::Function
+    DependsOn:
+      - TimeTrackingCRUDPolicy
+    Properties:
+      FunctionName: !Sub ${ResourcePrefix}-create-time-entry
       CodeUri: functions/
-      Handler: workspace_manager.create_workspace.handler
-      Description: Creates a new workspace
-      Environment:
-        Variables:
-          ACCOUNTS_TABLE: !Ref AccountsTableName
+      Handler: time_entry_manager.create_time_entry.handler
+      Description: Creates a new time entry
+      Role: !GetAtt ApiRole.Arn
       Events:
-        CreateWorkspace:
+        CreateTimeEntry:
           Type: Api
           Properties:
-            Path: /accounts/{accountId}/workspaces
+            Path: /time-entries
             Method: post
-      Policies:
-        - DynamoDBCrudPolicy:
-            TableName: !Ref AccountsTableName
 
-  GetWorkspaceFunction:
+  GetTimeEntryFunction:
     Type: AWS::Serverless::Function
+    DependsOn:
+      - TimeTrackingCRUDPolicy
     Properties:
+      FunctionName: !Sub ${ResourcePrefix}-get-time-entry
       CodeUri: functions/
-      Handler: workspace_manager.get_workspace.handler
-      Description: Retrieves workspace details
-      Environment:
-        Variables:
-          ACCOUNTS_TABLE: !Ref AccountsTableName
+      Handler: time_entry_manager.get_time_entry.handler
+      Description: Retrieves a time entry
+      Role: !GetAtt ApiRole.Arn
       Events:
-        GetWorkspace:
+        GetTimeEntry:
           Type: Api
           Properties:
-            Path: /workspaces/{workspaceId}
+            Path: /time-entries/{timeEntryId}
             Method: get
-      Policies:
-        - DynamoDBCrudPolicy:
-            TableName: !Ref AccountsTableName
 
-  UpdateWorkspaceFunction:
+  UpdateTimeEntryFunction:
     Type: AWS::Serverless::Function
+    DependsOn:
+      - TimeTrackingCRUDPolicy
     Properties:
+      FunctionName: !Sub ${ResourcePrefix}-update-time-entry
       CodeUri: functions/
-      Handler: workspace_manager.update_workspace.handler
-      Description: Updates workspace details
-      Environment:
-        Variables:
-          ACCOUNTS_TABLE: !Ref AccountsTableName
+      Handler: time_entry_manager.update_time_entry.handler
+      Description: Updates a time entry
+      Role: !GetAtt ApiRole.Arn
       Events:
-        UpdateWorkspace:
+        UpdateTimeEntry:
           Type: Api
           Properties:
-            Path: /workspaces/{workspaceId}
+            Path: /time-entries/{timeEntryId}
             Method: put
-      Policies:
-        - DynamoDBCrudPolicy:
-            TableName: !Ref AccountsTableName
 
-  DeleteWorkspaceFunction:
+  DeleteTimeEntryFunction:
     Type: AWS::Serverless::Function
+    DependsOn:
+      - TimeTrackingCRUDPolicy
     Properties:
+      FunctionName: !Sub ${ResourcePrefix}-delete-time-entry
       CodeUri: functions/
-      Handler: workspace_manager.delete_workspace.handler
-      Description: Deletes (deactivates) a workspace
-      Environment:
-        Variables:
-          ACCOUNTS_TABLE: !Ref AccountsTableName
+      Handler: time_entry_manager.delete_time_entry.handler
+      Description: Deletes a time entry
+      Role: !GetAtt ApiRole.Arn
       Events:
-        DeleteWorkspace:
+        DeleteTimeEntry:
           Type: Api
           Properties:
-            Path: /workspaces/{workspaceId}
+            Path: /time-entries/{timeEntryId}
             Method: delete
-      Policies:
-        - DynamoDBCrudPolicy:
-            TableName: !Ref AccountsTableName
 
-  ListWorkspacesFunction:
+  ListTimeEntriesFunction:
     Type: AWS::Serverless::Function
+    DependsOn:
+      - TimeTrackingCRUDPolicy
     Properties:
+      FunctionName: !Sub ${ResourcePrefix}-list-time-entries
       CodeUri: functions/
-      Handler: workspace_manager.list_workspaces.handler
-      Description: Lists workspaces for an account
-      Environment:
-        Variables:
-          ACCOUNTS_TABLE: !Ref AccountsTableName
+      Handler: time_entry_manager.list_time_entries.handler
+      Description: Lists time entries
+      Role: !GetAtt ApiRole.Arn
       Events:
-        GetWorkspaces:
+        ListTimeEntries:
           Type: Api
           Properties:
-            Path: /accounts/{accountId}/workspaces
+            Path: /time-entries
             Method: get
-      Policies:
-        - DynamoDBCrudPolicy:
-            TableName: !Ref AccountsTableName
+            
+  GetUserTimeReportFunction:
+    Type: AWS::Serverless::Function
+    DependsOn:
+      - TimeTrackingCRUDPolicy
+    Properties:
+      FunctionName: !Sub ${ResourcePrefix}-get-user-time-report
+      CodeUri: functions/
+      Handler: time_report_manager.get_user_time_report.handler
+      Description: Generates a time report for a user
+      Role: !GetAtt ApiRole.Arn
+      Events:
+        GetUserTimeReport:
+          Type: Api
+          Properties:
+            Path: /reports/users/{userId}/time
+            Method: get
 
 Outputs:
-  CreateWorkspaceFunction:
-    Description: "Create Workspace Lambda Function ARN"
-    Value: !GetAtt CreateWorkspaceFunction.Arn
+  TimeEntriesTable:
+    Description: "Time Entries DynamoDB Table Name"
+    Value: !Ref TimeEntriesTable
+    
+  CreateTimeEntryFunction:
+    Description: "Create Time Entry Lambda Function ARN"
+    Value: !GetAtt CreateTimeEntryFunction.Arn
   
-  GetWorkspaceFunction:
-    Description: "Get Workspace Lambda Function ARN"
-    Value: !GetAtt GetWorkspaceFunction.Arn
+  GetTimeEntryFunction:
+    Description: "Get Time Entry Lambda Function ARN"
+    Value: !GetAtt GetTimeEntryFunction.Arn
   
-  UpdateWorkspaceFunction:
-    Description: "Update Workspace Lambda Function ARN"
-    Value: !GetAtt UpdateWorkspaceFunction.Arn
+  UpdateTimeEntryFunction:
+    Description: "Update Time Entry Lambda Function ARN"
+    Value: !GetAtt UpdateTimeEntryFunction.Arn
   
-  DeleteWorkspaceFunction:
-    Description: "Delete Workspace Lambda Function ARN"
-    Value: !GetAtt DeleteWorkspaceFunction.Arn
+  DeleteTimeEntryFunction:
+    Description: "Delete Time Entry Lambda Function ARN"
+    Value: !GetAtt DeleteTimeEntryFunction.Arn
   
-  ListWorkspacesFunction:
-    Description: "List Workspaces Lambda Function ARN"
-    Value: !GetAtt ListWorkspacesFunction.Arn 
+  ListTimeEntriesFunction:
+    Description: "List Time Entries Lambda Function ARN"
+    Value: !GetAtt ListTimeEntriesFunction.Arn
+    
+  GetUserTimeReportFunction:
+    Description: "Get User Time Report Lambda Function ARN"
+    Value: !GetAtt GetUserTimeReportFunction.Arn
+    
+  ApiEndpoint:
+    Description: API Gateway endpoint URL for time tracking operations
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/" 

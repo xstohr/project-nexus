@@ -1,5 +1,6 @@
-AWSTemplateFormatVersion: '2010-09-09'
-Transform: AWS::Serverless-2016-10-31
+AWSTemplateFormatVersion: 2010-09-09
+Transform:
+  - AWS::Serverless-2016-10-31
 Description: Nexus API Service
 
 Parameters:
@@ -11,6 +12,19 @@ Parameters:
       - staging
       - prod
     Description: Environment name for deployment
+  ServiceName:
+    Type: String
+    Default: nexus-api
+  ResourcePrefix:
+    Type: String
+    Default: nexus-api
+  IAMResourcePrefix:
+    Type: String
+    Default: Service-API
+  LogLevel:
+    Type: String
+    Default: INFO
+    Description: Log level for Lambda functions
 
 Globals:
   Function:
@@ -21,10 +35,59 @@ Globals:
       - x86_64
     Environment:
       Variables:
-        LOG_LEVEL: INFO
-        ENVIRONMENT: !Ref Environment
+        LOG_LEVEL: !Ref LogLevel
+        SERVICE_NAME: !Ref ServiceName
+        SERVICE_ENVIRONMENT: !Ref Environment
+
+Conditions:
+  IsProd: !Equals [ !Ref Environment, "prod" ]
+  IsNotProd: !Not [ Condition: IsProd ]
 
 Resources:
+  # Roles
+  ApiRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${IAMResourcePrefix}-ApiRole
+      Path: "/nexus/service-role/api/"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+                - apigateway.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess
+
+  # Policies
+  ResourcesTablePolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub ${IAMResourcePrefix}-ResourcesTable
+      Roles:
+        - !Ref ApiRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - dynamodb:Query
+              - dynamodb:Scan
+              - dynamodb:GetItem
+              - dynamodb:PutItem
+              - dynamodb:UpdateItem
+              - dynamodb:DeleteItem
+              - dynamodb:BatchWriteItem
+              - dynamodb:BatchGetItem
+            Resource:
+              - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ResourcesTable}"
+              - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ResourcesTable}/*"
+
   # API Gateway definition
   NexusApiGateway:
     Type: AWS::Serverless::Api
@@ -34,14 +97,19 @@ Resources:
         AllowMethods: "'GET,POST,PUT,DELETE,OPTIONS'"
         AllowHeaders: "'Content-Type,Authorization'"
         AllowOrigin: "'*'"
+      TracingEnabled: true
 
   # Lambda Functions
   HealthCheckFunction:
     Type: AWS::Serverless::Function
+    DependsOn:
+      - ApiRole
     Properties:
+      FunctionName: !Sub ${ResourcePrefix}-health-check
       CodeUri: functions/health_check/
       Handler: app.lambda_handler
       Description: API health check endpoint
+      Role: !GetAtt ApiRole.Arn
       Events:
         HealthCheck:
           Type: Api
@@ -49,15 +117,20 @@ Resources:
             RestApiId: !Ref NexusApiGateway
             Path: /health
             Method: get
-      Policies:
-        - AWSLambdaBasicExecutionRole
 
   ResourcesFunction:
     Type: AWS::Serverless::Function
+    DependsOn:
+      - ResourcesTablePolicy
     Properties:
+      FunctionName: !Sub ${ResourcePrefix}-resources
       CodeUri: functions/resources/
       Handler: app.lambda_handler
       Description: Resources API endpoint
+      Role: !GetAtt ApiRole.Arn
+      Environment:
+        Variables:
+          DYNAMODB_TABLE: !Ref ResourcesTable
       Events:
         GetResources:
           Type: Api
@@ -89,19 +162,12 @@ Resources:
             RestApiId: !Ref NexusApiGateway
             Path: /resources/{id}
             Method: delete
-      Environment:
-        Variables:
-          DYNAMODB_TABLE: !Sub "nexus-resources-${Environment}"
-      Policies:
-        - AWSLambdaBasicExecutionRole
-        - DynamoDBCrudPolicy:
-            TableName: !Sub "nexus-resources-${Environment}"
 
   # DynamoDB Table for resources
   ResourcesTable:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: !Sub "nexus-resources-${Environment}"
+      TableName: !Sub ${ResourcePrefix}-resources-${Environment}
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
         - AttributeName: id
@@ -109,9 +175,14 @@ Resources:
       KeySchema:
         - AttributeName: id
           KeyType: HASH
+      DeletionProtectionEnabled: !If [ IsProd, true, false ]
       Tags:
-        - Key: Environment
-          Value: !Ref Environment
+        - Key: stack-id
+          Value: !Sub "${AWS::StackId}"
+        - Key: stack-name
+          Value: !Sub "${AWS::StackName}"
+        - Key: service-name
+          Value: !Ref ServiceName
 
 Outputs:
   ApiEndpoint:

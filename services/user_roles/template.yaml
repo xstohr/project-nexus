@@ -1,6 +1,7 @@
-AWSTemplateFormatVersion: '2010-09-09'
-Transform: AWS::Serverless-2016-10-31
-Description: Nexus Workspaces Service - Manages workspaces for multi-tenant system
+AWSTemplateFormatVersion: 2010-09-09
+Transform:
+  - AWS::Serverless-2016-10-31
+Description: Nexus User Roles Service - Manages user roles and permissions
 
 Parameters:
   Environment:
@@ -11,9 +12,22 @@ Parameters:
       - staging
       - prod
     Description: Environment name for deployment
+  ServiceName:
+    Type: String
+    Default: nexus-user-roles
+  ResourcePrefix:
+    Type: String
+    Default: nexus-user-roles
+  IAMResourcePrefix:
+    Type: String
+    Default: Service-UserRoles
   AccountsTableName:
     Type: String
     Description: Name of the accounts table from the Accounts service
+  LogLevel:
+    Type: String
+    Default: INFO
+    Description: Log level for Lambda functions
 
 Globals:
   Function:
@@ -24,124 +38,167 @@ Globals:
       - x86_64
     Environment:
       Variables:
-        LOG_LEVEL: INFO
-        ENVIRONMENT: !Ref Environment
+        LOG_LEVEL: !Ref LogLevel
+        SERVICE_NAME: !Ref ServiceName
+        SERVICE_ENVIRONMENT: !Ref Environment
         ACCOUNTS_TABLE: !Ref AccountsTableName
 
+Conditions:
+  IsProd: !Equals [ !Ref Environment, "prod" ]
+  IsNotProd: !Not [ Condition: IsProd ]
+
 Resources:
-  # Lambda Functions for Workspace Management - each function follows single responsibility principle
-  CreateWorkspaceFunction:
-    Type: AWS::Serverless::Function
+  # Roles
+  ApiRole:
+    Type: AWS::IAM::Role
     Properties:
+      RoleName: !Sub ${IAMResourcePrefix}-ApiRole
+      Path: "/nexus/service-role/user-roles/"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+                - apigateway.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess
+
+  # Policies
+  AccountsTableCRUDPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub ${IAMResourcePrefix}-AccountsTableCRUD
+      Roles:
+        - !Ref ApiRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - dynamodb:Query
+              - dynamodb:Scan
+              - dynamodb:GetItem
+              - dynamodb:PutItem
+              - dynamodb:UpdateItem
+              - dynamodb:DeleteItem
+              - dynamodb:BatchWriteItem
+              - dynamodb:BatchGetItem
+            Resource:
+              - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${AccountsTableName}"
+              - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${AccountsTableName}/*"
+
+  # Lambda Functions for Role Management
+  AssignRoleFunction:
+    Type: AWS::Serverless::Function
+    DependsOn:
+      - AccountsTableCRUDPolicy
+    Properties:
+      FunctionName: !Sub ${ResourcePrefix}-assign-role
       CodeUri: functions/
-      Handler: workspace_manager.create_workspace.handler
-      Description: Creates a new workspace
-      Environment:
-        Variables:
-          ACCOUNTS_TABLE: !Ref AccountsTableName
+      Handler: role_manager.assign_role.handler
+      Description: Assigns a role to a user
+      Role: !GetAtt ApiRole.Arn
       Events:
-        CreateWorkspace:
+        AssignRole:
           Type: Api
           Properties:
-            Path: /accounts/{accountId}/workspaces
+            Path: /roles/assign
             Method: post
-      Policies:
-        - DynamoDBCrudPolicy:
-            TableName: !Ref AccountsTableName
 
-  GetWorkspaceFunction:
+  RevokeRoleFunction:
     Type: AWS::Serverless::Function
+    DependsOn:
+      - AccountsTableCRUDPolicy
     Properties:
+      FunctionName: !Sub ${ResourcePrefix}-revoke-role
       CodeUri: functions/
-      Handler: workspace_manager.get_workspace.handler
-      Description: Retrieves workspace details
-      Environment:
-        Variables:
-          ACCOUNTS_TABLE: !Ref AccountsTableName
+      Handler: role_manager.revoke_role.handler
+      Description: Revokes a role from a user
+      Role: !GetAtt ApiRole.Arn
       Events:
-        GetWorkspace:
+        RevokeRole:
           Type: Api
           Properties:
-            Path: /workspaces/{workspaceId}
+            Path: /roles/revoke
+            Method: post
+
+  GetUserRolesFunction:
+    Type: AWS::Serverless::Function
+    DependsOn:
+      - AccountsTableCRUDPolicy
+    Properties:
+      FunctionName: !Sub ${ResourcePrefix}-get-user-roles
+      CodeUri: functions/
+      Handler: role_manager.get_user_roles.handler
+      Description: Gets roles for a user
+      Role: !GetAtt ApiRole.Arn
+      Events:
+        GetUserRoles:
+          Type: Api
+          Properties:
+            Path: /users/{userId}/roles
             Method: get
-      Policies:
-        - DynamoDBCrudPolicy:
-            TableName: !Ref AccountsTableName
 
-  UpdateWorkspaceFunction:
+  ListRolesFunction:
     Type: AWS::Serverless::Function
+    DependsOn:
+      - AccountsTableCRUDPolicy
     Properties:
+      FunctionName: !Sub ${ResourcePrefix}-list-roles
       CodeUri: functions/
-      Handler: workspace_manager.update_workspace.handler
-      Description: Updates workspace details
-      Environment:
-        Variables:
-          ACCOUNTS_TABLE: !Ref AccountsTableName
+      Handler: role_manager.list_roles.handler
+      Description: Lists all available roles
+      Role: !GetAtt ApiRole.Arn
       Events:
-        UpdateWorkspace:
+        ListRoles:
           Type: Api
           Properties:
-            Path: /workspaces/{workspaceId}
-            Method: put
-      Policies:
-        - DynamoDBCrudPolicy:
-            TableName: !Ref AccountsTableName
-
-  DeleteWorkspaceFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      CodeUri: functions/
-      Handler: workspace_manager.delete_workspace.handler
-      Description: Deletes (deactivates) a workspace
-      Environment:
-        Variables:
-          ACCOUNTS_TABLE: !Ref AccountsTableName
-      Events:
-        DeleteWorkspace:
-          Type: Api
-          Properties:
-            Path: /workspaces/{workspaceId}
-            Method: delete
-      Policies:
-        - DynamoDBCrudPolicy:
-            TableName: !Ref AccountsTableName
-
-  ListWorkspacesFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      CodeUri: functions/
-      Handler: workspace_manager.list_workspaces.handler
-      Description: Lists workspaces for an account
-      Environment:
-        Variables:
-          ACCOUNTS_TABLE: !Ref AccountsTableName
-      Events:
-        GetWorkspaces:
-          Type: Api
-          Properties:
-            Path: /accounts/{accountId}/workspaces
+            Path: /roles
             Method: get
-      Policies:
-        - DynamoDBCrudPolicy:
-            TableName: !Ref AccountsTableName
+
+  CheckPermissionFunction:
+    Type: AWS::Serverless::Function
+    DependsOn:
+      - AccountsTableCRUDPolicy
+    Properties:
+      FunctionName: !Sub ${ResourcePrefix}-check-permission
+      CodeUri: functions/
+      Handler: role_manager.check_permission.handler
+      Description: Checks if a user has a specific permission
+      Role: !GetAtt ApiRole.Arn
+      Events:
+        CheckPermission:
+          Type: Api
+          Properties:
+            Path: /permissions/check
+            Method: post
 
 Outputs:
-  CreateWorkspaceFunction:
-    Description: "Create Workspace Lambda Function ARN"
-    Value: !GetAtt CreateWorkspaceFunction.Arn
+  AssignRoleFunction:
+    Description: "Assign Role Lambda Function ARN"
+    Value: !GetAtt AssignRoleFunction.Arn
   
-  GetWorkspaceFunction:
-    Description: "Get Workspace Lambda Function ARN"
-    Value: !GetAtt GetWorkspaceFunction.Arn
+  RevokeRoleFunction:
+    Description: "Revoke Role Lambda Function ARN"
+    Value: !GetAtt RevokeRoleFunction.Arn
   
-  UpdateWorkspaceFunction:
-    Description: "Update Workspace Lambda Function ARN"
-    Value: !GetAtt UpdateWorkspaceFunction.Arn
+  GetUserRolesFunction:
+    Description: "Get User Roles Lambda Function ARN"
+    Value: !GetAtt GetUserRolesFunction.Arn
   
-  DeleteWorkspaceFunction:
-    Description: "Delete Workspace Lambda Function ARN"
-    Value: !GetAtt DeleteWorkspaceFunction.Arn
+  ListRolesFunction:
+    Description: "List Roles Lambda Function ARN"
+    Value: !GetAtt ListRolesFunction.Arn
   
-  ListWorkspacesFunction:
-    Description: "List Workspaces Lambda Function ARN"
-    Value: !GetAtt ListWorkspacesFunction.Arn 
+  CheckPermissionFunction:
+    Description: "Check Permission Lambda Function ARN"
+    Value: !GetAtt CheckPermissionFunction.Arn
+    
+  ApiEndpoint:
+    Description: API Gateway endpoint URL for role operations
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/" 
