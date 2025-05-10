@@ -154,3 +154,6 @@ def lambda_handler(event, context):
                 'error': str(e)
             })
         } 
+
+# Generate the code using Orval
+os.system("npx orval")

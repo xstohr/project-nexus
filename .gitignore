@@ -44,3 +44,5 @@ env/
 
 # Logs
 *.log 
+
+frontend/node_modules/
